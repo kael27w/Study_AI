@@ -8,6 +8,7 @@ import { ThemeProvider } from "next-themes";
 import Link from "next/link";
 import "./globals.css";
 
+
 const defaultUrl = process.env.VERCEL_URL
   ? `https://${process.env.VERCEL_URL}`
   : "http://localhost:3000";
@@ -40,15 +41,16 @@ export default function RootLayout({
           <main className="min-h-screen flex flex-col items-center">
             <div className="flex-1 w-full flex flex-col gap-20 items-center">
               <nav className="w-full flex justify-center border-b border-b-foreground/10 h-16">
-                <div className="w-full max-w-5xl flex justify-between items-center p-3 px-5 text-sm">
+              {/* Inside the nav section, modify the "flex gap-5 items-center font-semibold" div
+              // to include a new Link component that points to the Upload Documents page.
+              // This will add a new link to the navigation bar.*/}
                   <div className="flex gap-5 items-center font-semibold">
                     <Link href={"/"}>Next.js Supabase Starter</Link>
+                    <Link href={"/documents"}>Upload Documents</Link> {/* Add this line */}
                     <div className="flex items-center gap-2">
                       <DeployButton />
                     </div>
                   </div>
-                  {!hasEnvVars ? <EnvVarWarning /> : <HeaderAuth />}
-                </div>
               </nav>
               <div className="flex flex-col gap-20 max-w-5xl p-5">
                 {children}

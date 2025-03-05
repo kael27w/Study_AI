@@ -1,39 +1,38 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import { toast } from 'sonner';
 
 interface FileUploadProps {
   onUploadSuccess?: (fileUrl: string) => void;
   acceptedFileTypes?: string[];
-  maxFileSize?: number; // in MB
+  maxFileSize?: number;
 }
 
 export const FileUpload: React.FC<FileUploadProps> = ({
   onUploadSuccess,
-  acceptedFileTypes = ['.pdf', '.txt'],
-  maxFileSize = 10 // 10 MB default
+  acceptedFileTypes = ['.pdf', '.txt', '.doc', '.docx'],
+  maxFileSize = 20
 }) => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const supabase = createClient();
-    
-    // Get the current user
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      toast.error('You must be logged in to upload files');
+    const file = event.target.files?.[0];
+    if (!file) {
+      toast.error('No file selected');
       return;
     }
 
-    const file = event.target.files?.[0];
-    if (!file) return;
-
     // Validate file type
-    if (!acceptedFileTypes.some(type => file.name.toLowerCase().endsWith(type.replace('*', '')))) {
+    const fileExtension = file.name.split('.').pop()?.toLowerCase();
+    const isValidType = acceptedFileTypes.some(type => 
+      type.replace('.', '').toLowerCase() === fileExtension
+    );
+
+    if (!isValidType) {
       toast.error(`Invalid file type. Accepted types: ${acceptedFileTypes.join(', ')}`);
       return;
     }
@@ -45,48 +44,108 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     }
 
     setIsUploading(true);
-    setUploadProgress(0);
+    setUploadProgress(10); // Show initial progress
+
+    // Simulate progress
+    const simulateProgress = () => {
+      let progress = 10;
+      const interval = setInterval(() => {
+        progress += Math.floor(Math.random() * 10);
+        if (progress >= 90) {
+          clearInterval(interval);
+          setUploadProgress(90);
+        } else {
+          setUploadProgress(progress);
+        }
+      }, 300);
+      
+      return () => clearInterval(interval);
+    };
+    
+    const cleanup = simulateProgress();
 
     try {
-      // Generate a unique filename to prevent overwriting
+      const supabase = createClient();
+      
+      // Check authentication
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      
+      if (authError || !user) {
+        cleanup();
+        toast.error('You must be logged in to upload files');
+        setIsUploading(false);
+        return;
+      }
+      
+      // Generate unique filename
       const fileExt = file.name.split('.').pop();
-      const fileName = `${Date.now()}.${fileExt}`;
-      const filePath = `${user.id}/${fileName}`;
-
-      // Upload the file
+      const fileName = `${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+      const filePath = `public/${fileName}`; // Use public folder
+      
+      console.log('Attempting to upload file:', filePath);
+      
+      // Upload file using Supabase Storage API
       const { data, error } = await supabase.storage
-        .from('documents')
+        .from('Documents')
         .upload(filePath, file, {
           cacheControl: '3600',
-          upsert: false
+          upsert: true
         });
-
-      if (error) throw error;
-
+      
+      if (error) {
+        cleanup();
+        console.error('Upload error details:', error);
+        
+        if (error.message) {
+          throw new Error(`Upload failed: ${error.message}`);
+        } else {
+          throw new Error('Permission denied: You do not have permission to upload files. Please check your Supabase storage permissions.');
+        }
+      }
+      
+      if (!data) {
+        cleanup();
+        throw new Error('No data returned from upload');
+      }
+      
+      setUploadProgress(95); // Almost done
+      
       // Get public URL
       const { data: urlData } = supabase.storage
-        .from('documents')
+        .from('Documents')
         .getPublicUrl(filePath);
-
+      
+      console.log('File uploaded successfully:', urlData.publicUrl);
       toast.success('File uploaded successfully');
       
-      // Optional callback for further processing
+      // Call upload success handler
       onUploadSuccess?.(urlData.publicUrl);
-
+      
+      setUploadProgress(100); // Complete
+      
     } catch (error) {
-      console.error('Upload error:', error);
-      toast.error('File upload failed');
+      console.error('Upload failed:', error);
+      toast.error(`${error instanceof Error ? error.message : 'Unknown upload error'}`);
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
+      // Reset the input field
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
+  };
+
+  // Function to trigger file input click
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
   };
 
   return (
     <div className="w-full max-w-md mx-auto p-4 bg-white shadow-md rounded-lg">
       <div className="flex flex-col items-center justify-center space-y-4">
-        <label 
-          htmlFor="file-upload" 
+        <div 
+          onClick={triggerFileInput}
           className={`
             w-full p-6 border-2 border-dashed rounded-lg text-center cursor-pointer
             ${isUploading 
@@ -100,7 +159,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
               <p>Uploading... {uploadProgress}%</p>
               <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
                 <div 
-                  className="bg-blue-600 h-2.5 rounded-full" 
+                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" 
                   style={{ width: `${uploadProgress}%` }}
                 ></div>
               </div>
@@ -116,6 +175,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
             </div>
           )}
           <input
+            ref={fileInputRef}
             id="file-upload"
             type="file"
             accept={acceptedFileTypes.join(',')}
@@ -123,7 +183,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
             disabled={isUploading}
             className="hidden"
           />
-        </label>
+        </div>
       </div>
     </div>
   );

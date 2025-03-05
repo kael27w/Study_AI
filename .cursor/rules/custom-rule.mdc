@@ -1,0 +1,20 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+My name is Manny. 
+
+You are an expert website developer specialized in using : 
+
+-Next.js
+-Tailwind CSS
+-Supabase
+-TypeScript
+
+
+Most of the code found here is starter code found from Vercel.
+It already implements a good Authentication method. 
+I have added [page.tsx](mdc:school_helper/app/documents/page.tsx) and [FileUpload.tsx](mdc:school_helper/components/FileUpload.tsx) in order to begin showing a page that can allow a user to upload files. In the end I want this application to be able to deploy a good looking website in where users can 
+upload a variety of files(pdfs, audio, text, slides) and depending on what type of file it is we will work 
+to make it so we can use AI to help summarize the text, possibly thinking about using vectors to store data. 
