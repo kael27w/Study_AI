@@ -26,13 +26,18 @@ npm install @langchain/openai @langchain/community langchain @langchain/document
 
 2. Set up environment variables in `.env.local`:
 ```bash
-# Supabase credentials
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+# Create .env.local file
+touch school_helper/.env.local
 
-# OpenAI API key
-OPENAI_API_KEY=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
+# Add Supabase credentials
+echo "NEXT_PUBLIC_SUPABASE_URL=your_supabase_url" >> school_helper/.env.local
+echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key" >> school_helper/.env.local
+
+# Add OpenAI API key (replace with your actual key)
+echo "OPENAI_API_KEY=your_openai_api_key" >> school_helper/.env.local
 ```
+
+⚠️ **Important**: Never commit your `.env.local` file to version control. It contains sensitive information.
 
 ## File Structure
 
