@@ -1,5 +1,10 @@
 {
   "dependencies": {
+    "@langchain/community": "^0.3.34",
+    "@langchain/openai": "^0.4.4",
+    "@types/pdf-parse": "^1.1.4",
+    "langchain": "^0.3.19",
+    "pdf-parse": "^1.1.1",
     "sonner": "^2.0.1"
   }
 }
