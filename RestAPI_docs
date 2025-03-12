@@ -1,0 +1,380 @@
+REST API
+Overview
+REST API
+
+Supabase auto-generates an API directly from your database schema allowing you to connect to your database through a restful interface, directly from the browser.
+
+The API is auto-generated from your database and is designed to get you building as fast as possible, without writing a single line of code.
+
+You can use them directly from the browser (two-tier architecture), or as a complement to your own API server (three-tier architecture).
+
+Features #
+Supabase provides a RESTful API using PostgREST. This is a very thin API layer on top of Postgres.
+It exposes everything you need from a CRUD API at the URL https://<project_ref>.supabase.co/rest/v1/.
+
+The REST interface is automatically reflected from your database's schema and is:
+
+Instant and auto-generated.
+As you update your database the changes are immediately accessible through your API.
+Self documenting.
+Supabase generates documentation in the Dashboard which updates as you make database changes.
+Secure.
+The API is configured to work with PostgreSQL's Row Level Security, provisioned behind an API gateway with key-auth enabled.
+Fast.
+Our benchmarks for basic reads are more than 300% faster than Firebase. The API is a very thin layer on top of Postgres, which does most of the heavy lifting.
+Scalable.
+The API can serve thousands of simultaneous requests, and works well for Serverless workloads.
+The reflected API is designed to retain as much of Postgres' capability as possible including:
+
+Basic CRUD operations (Create/Read/Update/Delete)
+Arbitrarily deep relationships among tables/views, functions that return table types can also nest related tables/views.
+Works with Postgres Views, Materialized Views and Foreign Tables
+Works with Postgres Functions
+User defined computed columns and computed relationships
+The Postgres security model - including Row Level Security, Roles, and Grants.
+The REST API resolves all requests to a single SQL statement leading to fast response times and high throughput.
+
+Reference:
+
+Docs
+Source Code
+API URL and keys#
+You can find the API URL and Keys in the Dashboard.
+
+
+Build an API route in less than 2 minutes.
+
+Create your first API route by creating a table called todos to store tasks.
+
+Let's create our first REST route which we can query using cURL or the browser.
+
+We'll create a database table called todos for storing tasks. This creates a corresponding API route /rest/v1/todos which can accept GET, POST, PATCH, & DELETE requests.
+
+1
+Set up a Supabase project with a 'todos' table
+Create a new project in the Supabase Dashboard.
+
+After your project is ready, create a table in your Supabase database. You can do this with either the Table interface or the SQL Editor.
+
+
+SQL
+
+Dashboard
+-- Create a table called "todos"
+-- with a column to store tasks.
+create table todos (
+  id serial primary key,
+  task text
+);
+
+2
+Allow public access
+Let's turn on Row Level Security for this table and allow public access.
+
+-- Turn on security
+alter table "todos"
+enable row level security;
+
+-- Allow anonymous access
+create policy "Allow public access"
+  on todos
+  for select
+  to anon
+  using (true);
+
+3
+Insert some dummy data
+Now we can add some data to our table which we can access through our API.
+
+insert into todos (task)
+values
+  ('Create tables'),
+  ('Enable security'),
+  ('Add data'),
+  ('Fetch data from the API');
+
+4
+Fetch the data
+Find your API URL and Keys in your Dashboard API Settings. You can now query your "todos" table by appending /rest/v1/todos to the API URL.
+
+Copy this block of code, substitute <PROJECT_REF> and <ANON_KEY>, then run it from a terminal.
+
+Terminal
+
+curl 'https://<PROJECT_REF>.supabase.co/rest/v1/todos' \
+-H "apikey: <ANON_KEY>" \
+-H "Authorization: Bearer <ANON_KEY>"
+Bonus#
+There are several options for accessing your data:
+
+Browser#
+You can query the route in your browser, by appending the anon key as a query parameter:
+
+https://<PROJECT_REF>.supabase.co/rest/v1/todos?apikey=<ANON_KEY>
+
+Client libraries#
+We provide a number of Client Libraries.
+
+
+JavaScript
+
+Dart
+
+Python
+
+Swift
+const { data, error } = await supabase.from('todos').select()
+
+Supabase provides client libraries for the REST and Realtime APIs. Some libraries are officially supported, and some are contributed by the community.
+
+Official libraries#
+Language	Source Code	Documentation
+Javascript/Typescript	supabase-js	Docs
+Dart/Flutter	supabase-flutter	Docs
+Swift	supabase-swift	Docs
+Python	supabase-py	Docs
+Community libraries#
+Language	Source Code	Documentation
+C#	supabase-csharp	Docs
+Go	supabase-go	
+Kotlin	supabase-kt	Docs
+Ruby	supabase-rb	
+Godot Engine (GDScript)	supabase-gdscript
+
+Auto-generated documentation
+
+Supabase generates documentation in the Dashboard which updates as you make database changes.
+
+Go to the API page in the Dashboard.
+Select any table under Tables and Views in the sidebar.
+Switch between the JavaScript and the cURL docs using the tabs.
+
+Generating TypeScript Types
+
+How to generate types for your API and Supabase libraries.
+
+Supabase APIs are generated from your database, which means that we can use database introspection to generate type-safe API definitions.
+
+Generating types from project dashboard#
+Supabase allows you to generate and download TypeScript types directly from the project dashboard.
+
+Generating types using Supabase CLI#
+The Supabase CLI is a single binary Go application that provides everything you need to setup a local development environment.
+
+You can install the CLI via npm or other supported package managers. The minimum required version of the CLI is v1.8.1.
+
+npm i supabase@">=1.8.1" --save-dev
+
+Login with your Personal Access Token:
+
+npx supabase login
+
+Before generating types, ensure you initialize your Supabase project:
+
+npx supabase init
+
+Generate types for your project to produce the database.types.ts file:
+
+npx supabase gen types typescript --project-id "$PROJECT_REF" --schema public > database.types.ts
+
+or in case of local development:
+
+npx supabase gen types typescript --local > database.types.ts
+
+These types are generated from your database schema. Given a table public.movies, the generated types will look like:
+
+create table public.movies (
+  id bigint generated always as identity primary key,
+  name text not null,
+  data jsonb null
+);
+
+./database.types.ts
+
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
+
+export interface Database {
+  public: {
+    Tables: {
+      movies: {
+        Row: {
+          // the data expected from .select()
+          id: number
+          name: string
+          data: Json | null
+        }
+        Insert: {
+          // the data to be passed to .insert()
+          id?: never // generated columns must not be supplied
+          name: string // `not null` columns with no default must be supplied
+          data?: Json | null // nullable columns can be omitted
+        }
+        Update: {
+          // the data to be passed to .update()
+          id?: never
+          name?: string // `not null` columns are optional on .update()
+          data?: Json | null
+        }
+      }
+    }
+  }
+}
+Using TypeScript type definitions#
+You can supply the type definitions to supabase-js like so:
+
+./index.tsx
+
+import { createClient } from '@supabase/supabase-js'
+import { Database } from './database.types'
+
+const supabase = createClient<Database>(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
+Helper types for tables and joins#
+You can use the following helper types to make the generated TypeScript types easier to use.
+
+Sometimes the generated types are not what you expect. For example, a view's column may show up as nullable when you expect it to be not null. Using type-fest, you can override the types like so:
+
+./database-generated.types.ts
+
+export type Json = // ...
+
+export interface Database {
+  // ...
+}
+./database.types.ts
+
+import { MergeDeep } from 'type-fest'
+import { Database as DatabaseGenerated } from './database-generated.types'
+export { Json } from './database-generated.types'
+
+// Override the type for a specific column in a view:
+export type Database = MergeDeep<
+  DatabaseGenerated,
+  {
+    public: {
+      Views: {
+        movies_view: {
+          Row: {
+            // id is a primary key in public.movies, so it must be `not null`
+            id: number
+          }
+        }
+      }
+    }
+  }
+>
+To use MergeDeep, set compilerOptions.strictNullChecks to true in your tsconfig.json.
+
+You can also override the type of an individual successful response if needed:
+
+// Partial type override allows you to only override some of the properties in your results
+const { data } = await supabase.from('countries').select().overrideTypes<Array<{ id: string }>>()
+// For a full replacement of the original return type use the `{ merge: false }` property as second argument
+const { data } = await supabase
+  .from('countries')
+  .select()
+  .overrideTypes<Array<{ id: string }>, { merge: false }>()
+// Use it with `maybeSingle` or `single`
+const { data } = await supabase.from('countries').select().single().overrideTypes<{ id: string }>()
+
+Type shorthands#
+The generated types provide shorthands for accessing tables and enums.
+
+./index.ts
+
+import { Database, Tables, Enums } from "./database.types.ts";
+
+// Before 😕
+let movie: Database['public']['Tables']['movies']['Row'] = // ...
+
+// After 😍
+let movie: Tables<'movies'>
+Response types for complex queries#
+supabase-js always returns a data object (for success), and an error object (for unsuccessful requests).
+
+These helper types provide the result types from any query, including nested types for database joins.
+
+Given the following schema with a relation between cities and countries:
+
+create table countries (
+  "id" serial primary key,
+  "name" text
+);
+
+create table cities (
+  "id" serial primary key,
+  "name" text,
+  "country_id" int references "countries"
+);
+
+We can get the nested CountriesWithCities type like this:
+
+import { QueryResult, QueryData, QueryError } from '@supabase/supabase-js'
+
+const countriesWithCitiesQuery = supabase.from('countries').select(`
+  id,
+  name,
+  cities (
+    id,
+    name
+  )
+`)
+type CountriesWithCities = QueryData<typeof countriesWithCitiesQuery>
+
+const { data, error } = await countriesWithCitiesQuery
+if (error) throw error
+const countriesWithCities: CountriesWithCities = data
+
+Update types automatically with GitHub Actions#
+One way to keep your type definitions in sync with your database is to set up a GitHub action that runs on a schedule.
+
+Add the following script to your package.json to run it using npm run update-types
+
+"update-types": "npx supabase gen types --lang=typescript --project-id \"$PROJECT_REF\" > database.types.ts"
+
+Create a file .github/workflows/update-types.yml with the following snippet to define the action along with the environment variables. This script will commit new type changes to your repo every night.
+
+name: Update database types
+
+on:
+  schedule:
+    # sets the action to run daily. You can modify this to run the action more or less frequently
+    - cron: '0 0 * * *'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+      PROJECT_REF: <your-project-id>
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v2.1.5
+        with:
+          node-version: 16
+      - run: npm run update-types
+      - name: check for file changes
+        id: git_status
+        run: |
+          echo "status=$(git status -s)" >> $GITHUB_OUTPUT
+      - name: Commit files
+        if: ${{contains(steps.git_status.outputs.status, ' ')}}
+        run: |
+          git add database.types.ts
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git commit -m "Update database types" -a
+      - name: Push changes
+        if: ${{contains(steps.git_status.outputs.status, ' ')}}
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+
+Alternatively, you can use a community-supported GitHub action: generate-supabase-db-types-github-action.
+
+Resources
