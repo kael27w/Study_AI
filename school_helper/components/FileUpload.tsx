@@ -16,8 +16,148 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   maxFileSize = 20
 }) => {
   const [isUploading, setIsUploading] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  let processingToastId: string | number | undefined = undefined;
+
+  // Function to process the document after upload
+  const processDocument = async (filePath: string, fileName: string, fileType: string) => {
+    console.log("🔍 [DEBUG] processDocument called with:", { filePath, fileName, fileType });
+    
+    try {
+      // Determine the appropriate API endpoint based on file type
+      const isAudioFile = ['mp3', 'wav', 'm4a'].includes(fileType.toLowerCase());
+      const apiEndpoint = isAudioFile ? '/api/process-audio-file' : '/api/process-single-document';
+      
+      console.log(`🔍 [DEBUG] Calling ${isAudioFile ? 'audio' : 'document'} processing API with data:`, 
+        JSON.stringify({ filePath, fileName }));
+      
+      setIsProcessing(true);
+      
+      // Show more detailed processing toast for audio files
+      if (isAudioFile) {
+        processingToastId = toast({
+          title: `Processing audio file`,
+          description: `Your audio is being transcribed and processed. This may take several minutes for longer recordings. Please be patient.`,
+          duration: 100000, // Long duration as processing might take time
+        });
+      }
+      
+      const response = await fetch(apiEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ filePath, fileName }),
+      });
+      
+      console.log("🔍 [DEBUG] API response status:", response.status);
+      
+      // Try to get the raw text first for debugging
+      let responseText;
+      try {
+        responseText = await response.text();
+        console.log("🔍 [DEBUG] Raw API response text:", responseText);
+      } catch (textError) {
+        console.error("🔍 [DEBUG] Error getting response text:", textError);
+        throw new Error("Failed to read API response");
+      }
+      
+      // Parse the response
+      let result;
+      try {
+        result = JSON.parse(responseText);
+        console.log("🔍 [DEBUG] Parsed API response:", result);
+      } catch (parseError) {
+        console.error("🔍 [DEBUG] Error parsing API response:", parseError);
+        
+        // If we can't parse the response, create a fallback result object
+        result = {
+          status: 'failed',
+          error: `Failed to parse API response: ${responseText.substring(0, 100)}...`,
+          details: responseText
+        };
+      }
+      
+      setIsProcessing(false);
+      
+      if (response.ok && (result.status === 'completed' || result.success)) {
+        console.log("🔍 [DEBUG] File processed successfully:", result);
+        
+        // Show toast with message from API or default
+        toast.success(result.message || `${isAudioFile ? 'Audio' : 'Document'} processed successfully`);
+        
+        // Show info if present
+        if (result.info) {
+          toast({
+            title: 'Note',
+            description: result.info,
+            duration: 8000,
+          });
+        }
+        
+        // For audio files, only redirect after successful processing
+        if (isAudioFile) {
+          // Now that processing is complete, trigger the onUploadSuccess callback
+          if (onUploadSuccess) {
+            console.log("🔍 [DEBUG] Audio processing complete, calling onUploadSuccess");
+            onUploadSuccess(filePath);
+          }
+        }
+      } else {
+        console.error("🔍 [DEBUG] Processing failed:", result);
+        
+        // Handle specific error cases
+        if (response.status === 413) {
+          toast({
+            title: 'File too large',
+            description: result.message || 'The audio file is too large for processing. Please upload a smaller file or compress it before uploading.',
+            variant: 'destructive',
+            duration: 10000,
+          });
+        } else {
+          toast({
+            title: 'Processing failed',
+            description: result.error || `Failed to process ${isAudioFile ? 'audio' : 'document'}.`,
+            variant: 'destructive',
+            duration: 10000,
+          });
+        }
+        
+        // For audio files, we won't redirect on failure
+        if (!isAudioFile && onUploadSuccess) {
+          console.log("🔍 [DEBUG] Calling onUploadSuccess despite processing failure (not an audio file)");
+          onUploadSuccess(filePath);
+        }
+      }
+    } catch (error) {
+      console.error("🔍 [DEBUG] Error calling processing API:", error);
+      setIsProcessing(false);
+      
+      // Determine if it's an audio file from the fileType parameter
+      const fileExtension = fileInputRef.current?.files?.[0]?.name.split('.').pop()?.toLowerCase() || '';
+      const isAudioFile = ['mp3', 'wav', 'm4a'].includes(fileExtension);
+      
+      toast({
+        title: 'Processing error',
+        description: 'An error occurred while processing your file. Please try again or contact support if the issue persists.',
+        variant: 'destructive',
+        duration: 8000,
+      });
+      
+      // For audio files, we won't redirect on error
+      if (!isAudioFile && onUploadSuccess) {
+        console.log("🔍 [DEBUG] Calling onUploadSuccess despite error (not an audio file)");
+        onUploadSuccess(filePath);
+      }
+    } finally {
+      // Dismiss the processing toast
+      if (processingToastId) {
+        toast.dismiss(processingToastId);
+      }
+    }
+  };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -27,7 +167,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     }
 
     // Validate file type
-    const fileExtension = file.name.split('.').pop()?.toLowerCase();
+    const fileExtension = file.name.split('.').pop()?.toLowerCase() || '';
     const isValidType = acceptedFileTypes.some(type => 
       type.replace('.', '').toLowerCase() === fileExtension
     );
@@ -37,9 +177,13 @@ export const FileUpload: React.FC<FileUploadProps> = ({
       return;
     }
 
-    // Validate file size
-    if (file.size > maxFileSize * 1024 * 1024) {
-      toast.error(`File too large. Maximum size is ${maxFileSize}MB`);
+    // Check if it's an audio file
+    const isAudioFile = ['mp3', 'wav', 'm4a'].includes(fileExtension.toLowerCase());
+    
+    // Validate file size - different limits for audio vs documents
+    const fileSizeLimit = isAudioFile ? 50 : maxFileSize; // 50MB for audio, configured limit for docs
+    if (file.size > fileSizeLimit * 1024 * 1024) {
+      toast.error(`File too large. Maximum size is ${fileSizeLimit}MB for ${isAudioFile ? 'audio files' : 'documents'}`);
       return;
     }
 
@@ -118,14 +262,42 @@ export const FileUpload: React.FC<FileUploadProps> = ({
       console.log('File uploaded successfully:', urlData.publicUrl);
       toast.success('File uploaded successfully');
       
-      // Call upload success handler
-      onUploadSuccess?.(urlData.publicUrl);
+      // Process the file automatically
+      setUploadProgress(95);
+      
+      // Clear progress after a short delay
+      setTimeout(() => {
+        setUploadProgress(0);
+        setIsUploading(false);
+        
+        // Show processing toast
+        processingToastId = toast({
+          title: `Processing ${isAudioFile ? 'audio' : 'document'}`,
+          description: `Your ${isAudioFile ? 'audio file' : 'document'} is being processed...${isAudioFile ? ' This may take a few minutes for longer recordings.' : ''}`,
+          duration: 100000, // Long duration as processing might take time
+        });
+        
+        console.log(`Starting ${isAudioFile ? 'audio' : 'document'} processing with filePath:`, filePath, 'and fileName:', file.name);
+        
+        // For regular documents, trigger onUploadSuccess immediately
+        // For audio files, onUploadSuccess will be called after processing completes
+        if (!isAudioFile && onUploadSuccess) {
+          onUploadSuccess(urlData.publicUrl);
+        }
+        
+        processDocument(filePath, file.name, fileExtension);
+      }, 1000);
       
       setUploadProgress(100); // Complete
       
     } catch (error) {
       console.error('Upload failed:', error);
       toast.error(`${error instanceof Error ? error.message : 'Unknown upload error'}`);
+      
+      // Add this line to fix the linter error - define isAudioFile in this catch block
+      const fileExtension = fileInputRef.current?.files?.[0]?.name.split('.').pop()?.toLowerCase() || '';
+      const isAudioFile = ['mp3', 'wav', 'm4a'].includes(fileExtension);
+      
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
@@ -148,7 +320,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           onClick={triggerFileInput}
           className={`
             w-full p-6 border-2 border-dashed rounded-lg text-center cursor-pointer
-            ${isUploading 
+            ${isUploading || isProcessing
               ? 'border-blue-300 bg-blue-50 text-blue-500' 
               : 'border-gray-300 hover:border-blue-500 hover:bg-blue-50'
             }
@@ -161,6 +333,16 @@ export const FileUpload: React.FC<FileUploadProps> = ({
                 <div 
                   className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" 
                   style={{ width: `${uploadProgress}%` }}
+                ></div>
+              </div>
+            </div>
+          ) : isProcessing ? (
+            <div>
+              <p>Processing audio file... This may take a few minutes.</p>
+              <div className="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                <div 
+                  className="bg-green-600 h-2.5 rounded-full transition-all duration-300 animate-pulse" 
+                  style={{ width: '100%' }}
                 ></div>
               </div>
             </div>
@@ -180,7 +362,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
             type="file"
             accept={acceptedFileTypes.join(',')}
             onChange={handleFileUpload}
-            disabled={isUploading}
+            disabled={isUploading || isProcessing}
             className="hidden"
           />
         </div>

@@ -4,6 +4,27 @@
 
 This document details the implementation of document vector processing in the School Helper application. The system processes PDF documents, generates vector embeddings using OpenAI's embedding model, and stores both the documents and their vector representations in a Supabase database for semantic search capabilities.
 
+Two Different Storage Systems
+Supabase Storage Bucket (called "Documents")
+This is where the actual PDF files are stored
+Your FileUpload component uploads files here
+Files are stored in the "public/" folder with a timestamp prefix
+Supabase Database Table (also called "Documents" with uppercase D)
+This is a database table that stores metadata about your documents
+Contains fields like id, user_id, file_url, original_name
+The file_url field references the location in the storage bucket
+How They Work Together
+When you upload a file:
+The FileUpload component uploads the file to the Documents bucket
+It gets a public URL for that file
+It does NOT automatically add an entry to the Documents table
+When you process documents:
+The processDocumentsFromBucket function reads files from the Documents bucket
+It processes each PDF file to generate vector embeddings
+The process-documents API endpoint then:
+Creates entries in the Documents table for each processed file
+Creates entries in the document_vectors table for the embeddings
+
 ## System Architecture
 
 ### Components
