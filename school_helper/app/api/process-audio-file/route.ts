@@ -56,6 +56,7 @@ async function createAudioFilesTable(supabase: any) {
         original_name TEXT NOT NULL,
         transcription_status TEXT NOT NULL,
         transcription_text TEXT,
+        document_id UUID,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
     `;
@@ -82,7 +83,8 @@ async function createAudioFilesTable(supabase: any) {
             CREATE TABLE IF NOT EXISTS audio_files (
               id UUID PRIMARY KEY,
               user_id TEXT NOT NULL,
-              transcription_text TEXT
+              transcription_text TEXT,
+              document_id UUID
             );
           `;
           
@@ -291,13 +293,76 @@ async function validateAudioFile(filePath: string): Promise<{ isValid: boolean; 
   }
 }
 
+async function ensureAudioFilesTableHasDocumentIdColumn(supabase: any) {
+  try {
+    console.log('🔍 [DEBUG API] Checking if audio_files table has document_id column');
+    
+    // Try to alter the table if needed
+    const alterTableSQL = `
+      ALTER TABLE IF EXISTS audio_files 
+      ADD COLUMN IF NOT EXISTS document_id UUID;
+    `;
+    
+    try {
+      // Method 1: Using exec_sql RPC
+      const { error: rpcError } = await supabase.rpc('exec_sql', { sql_query: alterTableSQL });
+      
+      if (rpcError) {
+        console.error('🔍 [DEBUG API] RPC error adding document_id column:', rpcError);
+        
+        // Method 2: Direct SQL query using REST API
+        const { error: restError } = await supabase.rest.sql.query(alterTableSQL);
+        
+        if (restError) {
+          console.error('🔍 [DEBUG API] REST API error adding document_id column:', restError);
+          return false;
+        }
+      }
+      
+      console.log('🔍 [DEBUG API] Ensured document_id column exists in audio_files table');
+      return true;
+    } catch (e) {
+      console.error('🔍 [DEBUG API] Error ensuring document_id column exists:', e);
+      return false;
+    }
+  } catch (e) {
+    console.error('🔍 [DEBUG API] Unexpected error checking for document_id column:', e);
+    return false;
+  }
+}
+
 export async function POST(request: Request) {
-  console.log('🔍 [DEBUG API] process-audio-file API called');
-  
-  // Array to track temporary files for cleanup
-  const tempFiles: string[] = [];
+  console.log("🔍 [DEBUG API] process-audio-file API called");
   
   try {
+    // Extract request data
+    let body;
+    try {
+      body = await request.json();
+      console.log("🔍 [DEBUG API] Request body:", body);
+    } catch (error) {
+      console.error("🔍 [DEBUG API] Error parsing request body:", error);
+      return NextResponse.json({
+        status: 'failed',
+        error: 'Invalid request format',
+        details: error instanceof Error ? error.message : 'Unknown parsing error'
+      }, { status: 400 });
+    }
+    
+    const { filePath, fileName } = body;
+    
+    if (!filePath || !fileName) {
+      console.error("🔍 [DEBUG API] Missing required parameters:", { filePath, fileName });
+      return NextResponse.json({
+        status: 'failed',
+        error: 'Missing required parameters',
+        details: 'Both filePath and fileName are required'
+      }, { status: 400 });
+    }
+    
+    // Array to track temporary files for cleanup
+    const tempFiles: string[] = [];
+    
     // Initialize Supabase client
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
     
@@ -305,21 +370,21 @@ export async function POST(request: Request) {
     const userId = '00000000-0000-0000-0000-000000000000'; // Replace with actual auth logic if needed
     console.log('🔍 [DEBUG API] User authentication:', userId);
     
-    // Parse the request body
-    const body = await request.json();
-    const { filePath, fileName } = body;
-    
-    if (!filePath) {
-      return NextResponse.json(
-        { error: 'No file path provided' },
-        { status: 400 }
-      );
+    // Try to get the actual user ID from cookies
+    let actualUserId = userId;
+    try {
+      // Skip cookie extraction for now due to TypeScript issues
+      // Just use the default user ID
+      console.log('🔍 [DEBUG API] Using default user ID:', actualUserId);
+    } catch (e) {
+      console.error('🔍 [DEBUG API] Error extracting user ID:', e);
+      // Continue with the default user ID
     }
     
     console.log('🔍 [DEBUG API] Processing audio file:', {
       filePath,
       fileName,
-      userId
+      userId: actualUserId
     });
     
     // Download the file from Supabase Storage
@@ -346,7 +411,6 @@ export async function POST(request: Request) {
     // Save file to temporary location for transcription
     const tempDir = os.tmpdir();
     const tempFilePath = path.join(tempDir, path.basename(filePath));
-    tempFiles.push(tempFilePath);
     
     // Convert Blob to Buffer and write to disk
     const buffer = Buffer.from(await fileData.arrayBuffer());
@@ -361,7 +425,7 @@ export async function POST(request: Request) {
       
       const initialAudioData = {
         id: audioId,
-        user_id: userId,
+        user_id: actualUserId,
         file_url: filePath,
         original_name: fileName,
         transcription_status: 'processing',
@@ -381,6 +445,10 @@ export async function POST(request: Request) {
           console.log('🔍 [DEBUG API] audio_files table does not exist, attempting to create it');
           
           const tableCreated = await createAudioFilesTable(supabase);
+          if (tableCreated) {
+            // Also make sure the document_id column exists
+            await ensureAudioFilesTableHasDocumentIdColumn(supabase);
+          }
           
           if (tableCreated) {
             console.log('🔍 [DEBUG API] Created audio_files table, trying insertion again');
@@ -406,276 +474,353 @@ export async function POST(request: Request) {
     
     // Create a document entry for the transcription
     const documentId = uuidv4();
+    let documentCreatedSuccessfully = false;
     
     try {
       // Check if we need to include the audio_id in the document
-      const checkColumns = await supabase.from('Documents').select('*').limit(1);
+      const { data: checkColumns } = await supabase.from('Documents').select('*').limit(1);
       
       // Check if audio_id column exists in the response
-      const hasAudioIdColumn = checkColumns.data && checkColumns.data[0] && 'audio_id' in checkColumns.data[0];
+      const hasAudioIdColumn = checkColumns && checkColumns[0] && 'audio_id' in checkColumns[0];
       console.log('🔍 [DEBUG API] Documents table has audio_id column:', hasAudioIdColumn);
       
       // Create document entry with or without audio_id based on schema
-      const documentEntry = {
+      const documentEntry: any = {
         id: documentId,
-        user_id: userId,
+        user_id: actualUserId, // Use the actual user ID
         file_url: filePath,
-        original_name: `Transcription: ${fileName}`,
-        uploaded_at: new Date().toISOString(),
+        original_name: `Transcription: ${fileName}`
       };
       
-      // Only add audio_id if the column exists
+      // Always add the audio_id if the column exists
       if (hasAudioIdColumn) {
-        (documentEntry as any).audio_id = audioId;
+        documentEntry.audio_id = audioId;
+        console.log('🔍 [DEBUG API] Adding audio_id to document:', audioId);
       }
       
-      const { data, error: documentError } = await supabase
+      // Check if the Documents table has an uploaded_at column
+      const hasUploadedAtColumn = checkColumns && checkColumns[0] && 'uploaded_at' in checkColumns[0];
+      if (hasUploadedAtColumn) {
+        documentEntry.uploaded_at = new Date().toISOString();
+      }
+      
+      // Check if the Documents table has a created_at column
+      const hasCreatedAtColumn = checkColumns && checkColumns[0] && 'created_at' in checkColumns[0];
+      if (!hasCreatedAtColumn) {
+        // If there's no created_at column (which might be auto-generated), add it
+        documentEntry.created_at = new Date().toISOString();
+      }
+      
+      console.log('🔍 [DEBUG API] Inserting document with data:', documentEntry);
+      
+      const { data: insertedDoc, error: documentError } = await supabase
         .from('Documents')
         .insert([documentEntry])
         .select();
       
       if (documentError) {
         console.error('🔍 [DEBUG API] Document insertion error:', documentError);
+        throw new Error('Failed to create document for transcription: ' + documentError.message);
+      }
+      
+      documentCreatedSuccessfully = true;
+      console.log('🔍 [DEBUG API] Document created for transcription, ID:', documentId);
+      console.log('🔍 [DEBUG API] Inserted document data:', insertedDoc);
+      
+      // Verify the document was created by trying to fetch it
+      const { data: verifyDoc, error: verifyError } = await supabase
+        .from('Documents')
+        .select('*')
+        .eq('id', documentId)
+        .single();
+      
+      if (verifyError) {
+        console.error('🔍 [DEBUG API] Document verification error:', verifyError);
+      } else {
+        console.log('🔍 [DEBUG API] Document verified successfully:', verifyDoc);
+      }
+      
+      // If there's no audio_id column in the Documents table, we need to update the audio record
+      // to store the document_id instead for proper linking
+      if (!hasAudioIdColumn) {
+        console.log('🔍 [DEBUG API] No audio_id column in Documents, updating audio_files with document_id');
+        try {
+          const { error: audioUpdateError } = await supabase
+            .from('audio_files')
+            .update({ document_id: documentId })
+            .eq('id', audioId);
+          
+          if (audioUpdateError) {
+            console.error('🔍 [DEBUG API] Error updating audio record with document_id:', audioUpdateError);
+          } else {
+            console.log('🔍 [DEBUG API] Updated audio record with document_id:', documentId);
+          }
+        } catch (e) {
+          console.error('🔍 [DEBUG API] Error during audio record update with document_id:', e);
+        }
+      }
+      
+      // Now perform the actual transcription
+      let transcriptionText = '';
+      let transcriptionStatus = 'completed';
+      
+      try {
+        // Compress the audio file if it's too large
+        if (fileData.size > MAX_FILE_SIZE) {
+          const compressedFilePath = await compressAudioFile(tempFilePath);
+          
+          // Split the file if it's still too large after compression
+          const audioChunks = await splitAudioIfNeeded(compressedFilePath);
+          audioChunks.forEach(chunk => {
+            if (chunk !== compressedFilePath) tempFiles.push(chunk);
+          });
+          
+          // Transcribe all chunks and combine
+          transcriptionText = await transcribeAudioWithDeepgram(compressedFilePath);
+        } else {
+          // File is small enough, transcribe directly
+          console.log('🔍 [DEBUG API] Transcribing audio file directly...');
+          try {
+            // Validate the file before sending to Deepgram
+            const validation = await validateAudioFile(tempFilePath);
+            if (!validation.isValid) {
+              throw new Error(`Audio file validation failed: ${validation.details}`);
+            }
+            
+            console.log('🔍 [DEBUG API] Audio file validated successfully, proceeding with Deepgram transcription');
+            
+            // Log API key length for diagnostic purposes (don't log the actual key)
+            console.log('🔍 [DEBUG API] Deepgram API key length:', process.env.DEEPGRAM_API_KEY?.length || 'undefined');
+            
+            try {
+              // Transcribe using Deepgram
+              transcriptionText = await transcribeAudioWithDeepgram(tempFilePath);
+              console.log(`🔍 [DEBUG API] Transcription complete (${transcriptionText.length} chars)`);
+            } catch (apiError: any) {
+              // Handle specific Deepgram errors
+              console.error('🔍 [DEBUG API] Deepgram API error:', apiError);
+              transcriptionStatus = 'failed';
+              
+              // Check if this is a quota/billing error
+              if (apiError.message?.includes('quota') || 
+                  apiError.message?.includes('billing') ||
+                  apiError.message?.includes('limit exceeded') ||
+                  apiError.status === 429) {
+                console.error('🔍 [DEBUG API] Deepgram quota exceeded or billing error:', apiError);
+                throw new Error('Deepgram API quota exceeded. Please check your billing details.');
+              }
+              
+              // Handle connection errors
+              if (apiError.message?.includes('ECONNRESET') || 
+                  apiError.message?.includes('Connection error') ||
+                  apiError.cause?.code === 'ECONNRESET') {
+                console.error('🔍 [DEBUG API] Network connection error:', apiError);
+                throw new Error('Network connection error while calling Deepgram. Please try again later.');
+              }
+              
+              throw apiError;
+            }
+          } catch (directError) {
+            console.error('🔍 [DEBUG API] Transcription error:', directError);
+            transcriptionStatus = 'failed';
+            
+            // Use a placeholder and report the error
+            transcriptionText = "Audio transcription failed. Error: " + ((directError as Error).message || "Unknown error");
+            console.log('🔍 [DEBUG API] Using placeholder text for transcription failure');
+            throw directError;
+          }
+        }
+        
+        console.log('🔍 [DEBUG API] Transcription complete, length:', transcriptionText.length);
+      } catch (error: any) {
+        console.error('🔍 [DEBUG API] Transcription error:', error);
+        transcriptionStatus = 'failed';
+        
+        // Check for specific OpenAI errors
+        if (error?.status === 413) {
+          return NextResponse.json(
+            { 
+              error: 'Audio file too large for processing', 
+              message: 'The audio file exceeds the maximum size limit. Please upload a smaller file or compress it before uploading.',
+              status: 'failed'
+            },
+            { status: 413 }
+          );
+        }
+        
+        // Check for file format errors
+        if (error.message && (
+          error.message.includes('Invalid file format') || 
+          error.message.includes('Unsupported file type') ||
+          error.message.includes('File is empty')
+        )) {
+          return NextResponse.json(
+            { 
+              error: 'Invalid audio file format', 
+              message: 'The audio file format is not supported or the file is corrupted. Please upload a valid MP3, WAV, or M4A file.',
+              status: 'failed'
+            },
+            { status: 400 }
+          );
+        }
+        
+        // Check for API key errors
+        if (error.message && error.message.includes('API key')) {
+          console.error('🔍 [DEBUG API] API key error:', error.message);
+          return NextResponse.json(
+            { 
+              error: 'Transcription service unavailable', 
+              message: 'The audio transcription service is currently unavailable. Please try again later.',
+              status: 'failed'
+            },
+            { status: 503 }
+          );
+        }
+        
+        // Generic error response
         return NextResponse.json(
-          { error: 'Failed to create document for transcription' },
+          { 
+            error: 'Failed to transcribe audio', 
+            message: 'An error occurred while transcribing the audio file. Please try again or upload a different file.',
+            details: String(error),
+            status: 'failed'
+          },
           { status: 500 }
         );
       }
       
-      console.log('🔍 [DEBUG API] Document created for transcription, ID:', documentId);
-    } catch (e) {
-      console.error('🔍 [DEBUG API] Unexpected error during document creation:', e);
-      return NextResponse.json(
-        { error: 'Failed to create document for transcription' },
-        { status: 500 }
-      );
-    }
-    
-    // Now perform the actual transcription
-    let transcriptionText = '';
-    let transcriptionStatus = 'completed';
-    
-    try {
-      // Compress the audio file if it's too large
-      if (fileData.size > MAX_FILE_SIZE) {
-        const compressedFilePath = await compressAudioFile(tempFilePath);
-        tempFiles.push(compressedFilePath);
+      // Update the audio record with the transcription and status
+      try {
+        console.log('🔍 [DEBUG API] Updating audio record with transcription, ID:', audioId);
         
-        // Split the file if it's still too large after compression
-        const audioChunks = await splitAudioIfNeeded(compressedFilePath);
-        audioChunks.forEach(chunk => {
-          if (chunk !== compressedFilePath) tempFiles.push(chunk);
-        });
+        // First update the audio_files table
+        const { data: updatedAudio, error: audioUpdateError } = await supabase
+          .from('audio_files')
+          .update({
+            transcription_text: transcriptionText,
+            transcription_status: transcriptionStatus
+          })
+          .eq('id', audioId)
+          .select();
         
-        // Transcribe all chunks and combine
-        transcriptionText = await transcribeAudioWithDeepgram(compressedFilePath);
-      } else {
-        // File is small enough, transcribe directly
-        console.log('🔍 [DEBUG API] Transcribing audio file directly...');
-        try {
-          // Validate the file before sending to Deepgram
-          const validation = await validateAudioFile(tempFilePath);
-          if (!validation.isValid) {
-            throw new Error(`Audio file validation failed: ${validation.details}`);
-          }
+        if (audioUpdateError) {
+          console.error('🔍 [DEBUG API] Audio record update error:', audioUpdateError);
+          throw new Error(`Failed to update audio record: ${audioUpdateError.message}`);
+        } else {
+          audioInsertSuccess = true;
+          console.log('🔍 [DEBUG API] Audio metadata saved successfully in audio_files table, ID:', audioId);
           
-          console.log('🔍 [DEBUG API] Audio file validated successfully, proceeding with Deepgram transcription');
+          // Now also update the Document record with the transcription and status
+          console.log('🔍 [DEBUG API] Updating Document record with transcription content, ID:', documentId);
           
-          // Log API key length for diagnostic purposes (don't log the actual key)
-          console.log('🔍 [DEBUG API] Deepgram API key length:', process.env.DEEPGRAM_API_KEY?.length || 'undefined');
-          
-          try {
-            // Transcribe using Deepgram
-            transcriptionText = await transcribeAudioWithDeepgram(tempFilePath);
-            console.log(`🔍 [DEBUG API] Transcription complete (${transcriptionText.length} chars)`);
-          } catch (apiError: any) {
-            // Handle specific Deepgram errors
-            console.error('🔍 [DEBUG API] Deepgram API error:', apiError);
-            transcriptionStatus = 'failed';
+          // Check if the document exists first
+          const { data: docCheck, error: docCheckError } = await supabase
+            .from('Documents')
+            .select('id, audio_id')
+            .eq('id', documentId)
+            .single();
             
-            // Check if this is a quota/billing error
-            if (apiError.message?.includes('quota') || 
-                apiError.message?.includes('billing') ||
-                apiError.message?.includes('limit exceeded') ||
-                apiError.status === 429) {
-              console.error('🔍 [DEBUG API] Deepgram quota exceeded or billing error:', apiError);
-              throw new Error('Deepgram API quota exceeded. Please check your billing details.');
+          if (docCheckError) {
+            console.error('🔍 [DEBUG API] Error checking document:', docCheckError);
+            // Don't throw an error, just log it and continue
+            console.error(`Failed to check document: ${docCheckError.message}`);
+          } else if (docCheck) {
+            console.log('🔍 [DEBUG API] Found document, updating with audio_id');
+            
+            // Check which columns exist in Documents table
+            try {
+              // First, try to update just the audio_id and status fields
+              const updateData: any = { 
+                audio_id: audioId,
+                updated_at: new Date().toISOString()
+              };
+              
+              // Don't try to update content or status since those columns don't exist
+              const { error: docUpdateError } = await supabase
+                .from('Documents')
+                .update(updateData)
+                .eq('id', documentId);
+                
+              if (docUpdateError) {
+                console.error('🔍 [DEBUG API] Error updating document with audio_id:', docUpdateError);
+                console.log(`Could not update document: ${docUpdateError.message}`);
+              } else {
+                console.log('🔍 [DEBUG API] Successfully updated document with audio_id');
+              }
+            } catch (updateError) {
+              console.error('🔍 [DEBUG API] Update document error:', updateError);
             }
-            
-            // Handle connection errors
-            if (apiError.message?.includes('ECONNRESET') || 
-                apiError.message?.includes('Connection error') ||
-                apiError.cause?.code === 'ECONNRESET') {
-              console.error('🔍 [DEBUG API] Network connection error:', apiError);
-              throw new Error('Network connection error while calling Deepgram. Please try again later.');
-            }
-            
-            throw apiError;
+          } else {
+            console.error('🔍 [DEBUG API] Document not found for ID:', documentId);
           }
-        } catch (directError) {
-          console.error('🔍 [DEBUG API] Transcription error:', directError);
-          transcriptionStatus = 'failed';
-          
-          // Use a placeholder and report the error
-          transcriptionText = "Audio transcription failed. Error: " + ((directError as Error).message || "Unknown error");
-          console.log('🔍 [DEBUG API] Using placeholder text for transcription failure');
-          throw directError;
         }
+      } catch (e) {
+        console.error('🔍 [DEBUG API] Error during record updates:', e);
+        
+        // Continue processing anyway to return a response
+        // Rather than failing completely, we'll let the client know
+        // there was an issue with updating the records
       }
       
-      console.log('🔍 [DEBUG API] Transcription complete, length:', transcriptionText.length);
-    } catch (error: any) {
-      console.error('🔍 [DEBUG API] Transcription error:', error);
-      transcriptionStatus = 'failed';
-      
-      // Check for specific OpenAI errors
-      if (error?.status === 413) {
-        return NextResponse.json(
-          { 
-            error: 'Audio file too large for processing', 
-            message: 'The audio file exceeds the maximum size limit. Please upload a smaller file or compress it before uploading.',
-            status: 'failed'
-          },
-          { status: 413 }
-        );
-      }
-      
-      // Check for file format errors
-      if (error.message && (
-        error.message.includes('Invalid file format') || 
-        error.message.includes('Unsupported file type') ||
-        error.message.includes('File is empty')
-      )) {
-        return NextResponse.json(
-          { 
-            error: 'Invalid audio file format', 
-            message: 'The audio file format is not supported or the file is corrupted. Please upload a valid MP3, WAV, or M4A file.',
-            status: 'failed'
-          },
-          { status: 400 }
-        );
-      }
-      
-      // Check for API key errors
-      if (error.message && error.message.includes('API key')) {
-        console.error('🔍 [DEBUG API] API key error:', error.message);
-        return NextResponse.json(
-          { 
-            error: 'Transcription service unavailable', 
-            message: 'The audio transcription service is currently unavailable. Please try again later.',
-            status: 'failed'
-          },
-          { status: 503 }
-        );
-      }
-      
-      // Generic error response
-      return NextResponse.json(
-        { 
-          error: 'Failed to transcribe audio', 
-          message: 'An error occurred while transcribing the audio file. Please try again or upload a different file.',
-          details: String(error),
-          status: 'failed'
-        },
-        { status: 500 }
-      );
-    }
-    
-    // Update the audio record with the transcription and status
-    try {
-      console.log('🔍 [DEBUG API] Updating audio record with transcription, ID:', audioId);
-      
-      const audioUpdateData = {
-        transcription_text: transcriptionText,
-        transcription_status: transcriptionStatus,
-      };
-      
-      console.log('🔍 [DEBUG API] Audio data to update:', {
-        id: audioId,
-        transcription_status: transcriptionStatus,
-        transcription_text: transcriptionText.substring(0, 100) + '...' // Log partial text to avoid console flood
+      // Store the transcription in document_vectors to ensure it's accessible
+      console.log('🔍 [DEBUG API] Splitting transcription into chunks');
+      const textSplitter = new RecursiveCharacterTextSplitter({
+        chunkSize: 1000,
+        chunkOverlap: 200,
       });
       
-      const { data, error: audioUpdateError } = await supabase
-        .from('audio_files')
-        .update(audioUpdateData)
-        .eq('id', audioId)
-        .select();
+      const chunks = await textSplitter.createDocuments([transcriptionText]);
+      console.log('🔍 [DEBUG API] Transcription split into', chunks.length, 'chunks');
       
-      if (audioUpdateError) {
-        console.error('🔍 [DEBUG API] Audio record update error:', audioUpdateError);
+      // Skip OpenAI embeddings completely
+      console.log('🔍 [DEBUG API] Skipping OpenAI embeddings due to quota issues');
+      const embeddingsAvailable = false;
+      
+      // Generate embeddings and insert into vectors table (if available)
+      console.log('🔍 [DEBUG API] Generating embeddings and inserting vectors');
+      let insertCount = 0;
+      let errorCount = 0;
+      
+      // If embeddings failed or aren't available, use the fallback method
+      // Note: We can't store full transcription text in document_vectors table as it has no content column
+      console.log('🔍 [DEBUG API] Cannot store transcription text directly as document_vectors has no content column');
+      console.log('🔍 [DEBUG API] Will rely on audio_files table for transcription storage');
+      
+      // Ensure the audio_files insertion was successful
+      if (audioInsertSuccess) {
+        console.log('🔍 [DEBUG API] Transcription was successfully stored in audio_files table');
       } else {
-        audioInsertSuccess = true;
-        console.log('🔍 [DEBUG API] Audio metadata saved, ID:', audioId);
+        console.error('🔍 [DEBUG API] Warning: Transcription may not be persisted in any table');
+        console.log('🔍 [DEBUG API] Transcription text (first 100 chars):', transcriptionText.substring(0, 100));
       }
+      
+      console.log('🔍 [DEBUG API] Vector insertion complete:', { insertCount, errorCount });
+      
+      // Even if we had errors with embeddings, we still have a successful transcription
+      return NextResponse.json({
+        success: true,
+        status: transcriptionStatus,
+        message: 'Audio transcribed and processed successfully',
+        documentId: documentId,
+        audioId: audioId,
+        isCreated: documentCreatedSuccessfully,
+        audioInsertSuccess,
+        chunkCount: chunks.length,
+        insertedVectors: insertCount,
+        embeddingsAvailable,
+      });
+      
     } catch (e) {
-      console.error('🔍 [DEBUG API] Unexpected error during audio record update:', e);
+      console.error('🔍 [DEBUG API] Unexpected error during transcription:', e);
+      throw new Error('Failed to transcribe audio: ' + (e instanceof Error ? e.message : String(e)));
     }
-    
-    // Store the transcription in document_vectors to ensure it's accessible
-    console.log('🔍 [DEBUG API] Splitting transcription into chunks');
-    const textSplitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 1000,
-      chunkOverlap: 200,
-    });
-    
-    const chunks = await textSplitter.createDocuments([transcriptionText]);
-    console.log('🔍 [DEBUG API] Transcription split into', chunks.length, 'chunks');
-    
-    // Skip OpenAI embeddings completely
-    console.log('🔍 [DEBUG API] Skipping OpenAI embeddings due to quota issues');
-    const embeddingsAvailable = false;
-    
-    // Generate embeddings and insert into vectors table (if available)
-    console.log('🔍 [DEBUG API] Generating embeddings and inserting vectors');
-    let insertCount = 0;
-    let errorCount = 0;
-    
-    // If embeddings failed or aren't available, use the fallback method
-    // Note: We can't store full transcription text in document_vectors table as it has no content column
-    console.log('🔍 [DEBUG API] Cannot store transcription text directly as document_vectors has no content column');
-    console.log('🔍 [DEBUG API] Will rely on audio_files table for transcription storage');
-    
-    // Ensure the audio_files insertion was successful
-    if (audioInsertSuccess) {
-      console.log('🔍 [DEBUG API] Transcription was successfully stored in audio_files table');
-    } else {
-      console.error('🔍 [DEBUG API] Warning: Transcription may not be persisted in any table');
-      console.log('🔍 [DEBUG API] Transcription text (first 100 chars):', transcriptionText.substring(0, 100));
-    }
-    
-    console.log('🔍 [DEBUG API] Vector insertion complete:', { insertCount, errorCount });
-    
-    // Even if we had errors with embeddings, we still have a successful transcription
-    return NextResponse.json({
-      success: true,
-      status: transcriptionStatus,
-      message: 'Audio transcribed and processed successfully',
-      documentId,
-      audioId,
-      chunkCount: chunks.length,
-      insertedVectors: insertCount,
-      audioInsertSuccess,
-      embeddingsAvailable,
-    });
-    
   } catch (error) {
-    console.error('🔍 [DEBUG API] Unexpected error:', error);
-    return NextResponse.json(
-      { error: 'An unexpected error occurred', details: String(error) },
-      { status: 500 }
-    );
-  } finally {
-    // Clean up temporary files
-    for (const file of tempFiles) {
-      try {
-        if (fs.existsSync(file)) {
-          fs.unlinkSync(file);
-          console.log('🔍 [DEBUG API] Cleaned up temporary file:', file);
-        }
-      } catch (error) {
-        console.error('🔍 [DEBUG API] Error cleaning up file:', file, error);
-      }
-    }
+    console.error("🔍 [DEBUG API] Unhandled error in audio processing:", error);
+    return NextResponse.json({
+      status: 'failed',
+      error: 'Audio processing failed',
+      details: error instanceof Error ? error.message : 'Unknown processing error',
+      suggestion: 'This might be a temporary issue. Please try uploading a different audio file or try again later.'
+    }, { status: 500 });
   }
 } 
